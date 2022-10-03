@@ -50,7 +50,7 @@
 
 		async function loadStarCatalog(callback){
 
-			  let response = await fetch('/BSC5ra');
+			  let response = await fetch('./BSC5ra');
 			  let bsc = await response.arrayBuffer();
 
 			  let header = new DataView(bsc.slice(0,28));
