@@ -1,1 +1,219 @@
-Hello World
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<title>JunoGram</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+	<style> body { margin: 0; padding: 0; background-color: #000000; overscroll-behavior: none; } </style>
+</head>
+<body>
+	<script type="module">
+		import * as THREE from 'https://unpkg.com/three@0.144.0/build/three.module.js';
+
+		const starColors = {
+		  O: 0x2244bb, // >30,000K       blue  
+		  B: 0x99aaee, // 10,000-30,000K deep blue white
+		  A: 0xccddff, // 7500-10,000K   blueish white
+		  F: 0xffffff, // 6000-7500K     white
+		  G: 0xffeedd, // 5200-6000K     yellow white
+		  K: 0xffccaa, // 3700-5200K     pale yellow orange
+		  M: 0xffaa77, // 2400-3700K     light orange red
+		  W: 0x2244bb, // similar chroma to O
+		  p: 0xffffff, // similar chroma to F
+		  S: 0xffaa77, // similar chroma to M
+		  C: 0xffccaa, // similar chroma to K
+		  N: 0xffaa77  // similar chroma to M
+		};
+		
+		let SCREEN_WIDTH = window.innerWidth;
+		let SCREEN_HEIGHT = window.innerHeight;
+		let aspect = SCREEN_WIDTH / SCREEN_HEIGHT;
+		let orbitDetail = 3000;
+		
+		let loadTs;
+		let container;
+		let scene, renderer, jupiter, juno;
+		let cameraRig, activeCamera, activeHelper;
+		let camera;
+		let cameraHelper;
+		let curvePoints;
+		let stars = [];
+		let starGroups = {};
+		let curveVertices = [];
+		
+		init();
+
+		function init() {
+			const callback = function() { buildScene(); animate(); };
+			loadStarCatalog(callback);
+		}
+
+		async function loadStarCatalog(callback){
+
+			  let response = await fetch('/BSC5ra');
+			  let bsc = await response.arrayBuffer();
+
+			  let header = new DataView(bsc.slice(0,28));
+			  let numStars = header.getInt32(8,false)*-1;
+			  let starTypes = {};
+
+			  for (let i = 0; i < numStars; i++) {
+
+				let v = new DataView(bsc.slice(28 + 32*i, 28 + 32*(i+1)) );
+
+				let starId = v.getFloat32(0,false);
+				let ra = v.getFloat64(4,false);
+				let dec = v.getFloat64(12,false);
+				let raHours = ra/Math.PI/2*24;
+				let decDegrees = dec/Math.PI*180;
+				let starType = String.fromCharCode(v.getInt8(20,false)) + String.fromCharCode(v.getInt8(21,false));
+				let magnitude = v.getInt16(22,false)/100;
+				let deltaRa = v.getFloat32(24,false);
+				let deltaDec = v.getFloat32(28,false);
+				let starRadius = Math.floor(Math.sqrt(Math.pow(2.512,magnitude)/Math.PI));
+				let starGroup = starType[0] + "" + starRadius;
+
+				if (starGroups[starGroup] === undefined) starGroups[starGroup] = {
+				  color: starColors[starType[0]],
+				  radius: starRadius+0.5,
+				  stars: []
+				};
+				starGroups[starGroup].stars.push({starId,ra,dec,starType:starType[0],magnitude,deltaRa,deltaDec});
+			  }
+			  
+			  callback();
+		}
+
+		function buildScene() {
+			loadTs = Date.now();
+
+			container = document.createElement( 'div' );
+			document.body.appendChild( container );
+
+			scene = new THREE.Scene();
+
+			camera = new THREE.PerspectiveCamera( 58, 1 * aspect, 10, 20000 );
+			cameraHelper = new THREE.CameraHelper( camera );
+			scene.add( cameraHelper );
+			camera.rotation.y = Math.PI;
+			cameraRig = new THREE.Group();
+			cameraRig.add( camera );
+			scene.add( cameraRig );
+
+			const points = [];
+			for ( let i = 0; i < 1.01; i += .05 ) {
+				points.push( new THREE.Vector2( Math.sin( i * Math.PI ) * 71.492, Math.cos(i*Math.PI)*66.854));
+			}
+			jupiter = new THREE.Mesh(
+				new THREE.LatheGeometry( points, 30 ),
+				new THREE.MeshLambertMaterial( { color: 0xbb9966 } )
+			);
+			scene.add( jupiter );
+			//
+			juno = new THREE.Mesh(
+				new THREE.SphereGeometry(10, 32, 16),
+				new THREE.MeshBasicMaterial( { color: 0xff0000, wireframe: true } )
+			);
+			scene.add(juno);
+			//
+			for (let group in starGroups) {
+				const geometry = new THREE.BufferGeometry();
+				const vertices = [];
+				for ( let i = 0; i < starGroups[group].stars.length; i ++ ) {
+					var ra = starGroups[group].stars[i].ra;
+					var dec = starGroups[group].stars[i].dec;
+					var dist = 5000;
+					vertices.push( Math.cos(ra)*Math.cos(dec)*dist ); // x ra
+					vertices.push( Math.sin(dec)*dist ); // y declination
+					vertices.push( Math.sin(ra)*Math.cos(dec)*dist ); // z
+				}
+				geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( vertices, 3 ) );
+				const particles = new THREE.Points( geometry, new THREE.PointsMaterial( {
+				  color: starGroups[group].color, 
+				  sizeAttenuation: true, 
+				  size: Math.pow(starGroups[group].radius,3)/50
+				}));
+				scene.add( particles );
+			}
+
+			const curve = new THREE.EllipseCurve(
+				-3482,  0,        // ax, aY
+				3555.5, 718,      // xRadius, yRadius
+				0*Math.PI,  2 * Math.PI,  // aStartAngle, aEndAngle
+				false,            // aClockwise
+				0                 // aRotation
+			);
+			let curve2dPoints = curve.getPoints(orbitDetail);
+			for (let i = 0; i < curve2dPoints.length; i++) {
+				curveVertices.push( curve2dPoints[i].x ); // x
+				curveVertices.push( curve2dPoints[i].y ); // y
+				curveVertices.push( 0 ); // z 
+			}
+			const curveGeometry = new THREE.BufferGeometry();
+			curveGeometry.setAttribute( 'position', new THREE.Float32BufferAttribute( curveVertices, 3 ) );
+			curvePoints = new THREE.Points( curveGeometry, new THREE.PointsMaterial( {
+			  color: 0x00aaaa, sizeAttenuation: true, size: 8
+			} ) );
+			scene.add(curvePoints); //.rotateZ(.28*Math.PI).rotateY(.085*Math.PI));
+			
+			const light = new THREE.PointLight( 0xffffff, 1, 0 );
+			light.position.set( 0, 0, 200 );
+			scene.add( light );
+
+			//
+			renderer = new THREE.WebGLRenderer( { antialias: true } );
+			renderer.setPixelRatio( window.devicePixelRatio );
+			renderer.setSize( SCREEN_WIDTH, SCREEN_HEIGHT );
+			container.appendChild( renderer.domElement );
+			renderer.autoClear = false;
+			window.addEventListener( 'resize', onWindowResize );
+		}
+
+		function onWindowResize() {
+			SCREEN_WIDTH = window.innerWidth;
+			SCREEN_HEIGHT = window.innerHeight;
+			aspect = SCREEN_WIDTH / SCREEN_HEIGHT;
+
+			renderer.setSize( SCREEN_WIDTH, SCREEN_HEIGHT );
+
+			camera.aspect = aspect;
+			camera.updateProjectionMatrix();
+		}
+
+		function animate() {
+			requestAnimationFrame( animate );
+			render();
+		}
+
+		function render() {
+
+			const t = (Date.now() - loadTs - 30000);
+			const camPos = t * 0.00005;
+			const junoPos = orbitDetail - Math.floor(Date.now()/2)%orbitDetail - 1;
+
+			cameraRig.position.x = Math.sin(camPos) * 3000;
+			cameraRig.position.y = 0;
+			cameraRig.position.z = Math.cos(camPos) * 3000;
+			
+			juno.position.x = curveVertices[junoPos*3];
+			juno.position.y = curveVertices[junoPos*3+1];
+			juno.position.z = curveVertices[junoPos*3+2];
+
+			cameraRig.lookAt( jupiter.position );
+
+			cameraHelper.update();
+			cameraHelper.visible = true;
+
+			// render scene with helper to a viewport while visible for debugging
+
+			renderer.clear();
+
+			cameraHelper.visible = false;
+			renderer.setViewport( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT );
+			renderer.render( scene, camera );
+
+		}
+
+	</script>
+</body>
+</html>
